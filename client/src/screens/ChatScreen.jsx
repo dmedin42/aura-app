@@ -4,8 +4,20 @@ import Avatar, { GroupPair } from '../components/Avatar.jsx';
 import Icon from '../components/Icon.jsx';
 import { useToast } from '../components/ui.jsx';
 import { formatTime, plural } from '../format.js';
+import { usePoll } from '../usePoll.js';
 
 const POLL_MS = 5000;
+const NEAR_BOTTOM_PX = 120;
+const CHAT_GONE = ['NOT_IN_CHAT', 'CHAT_NOT_FOUND'];
+
+const newestId = (messages) => messages.reduce((max, m) => Math.max(max, m.id), 0);
+
+// Adds messages once each (polls repeat the ones you sent), keeping the list in id order.
+function mergeMessages(list, incoming) {
+  const ids = new Set(list.map((m) => m.id));
+  const added = incoming.filter((m) => !ids.has(m.id));
+  return added.length ? [...list, ...added].sort((a, b) => a.id - b.id) : list;
+}
 
 // Phones: a full screen with a back arrow. Desktop: `embedded` in the Messages split view,
 // calling onActivity after it marks the chat read or sends, so the chat list can refresh.
@@ -15,34 +27,82 @@ export default function ChatScreen({ chatId, refreshMe, embedded = false, onActi
   const [error, setError] = useState(null);
   const [draft, setDraft] = useState('');
   const [sending, setSending] = useState(false);
+  const [unseen, setUnseen] = useState(false);
   const bottom = useRef(null);
-  const lastCount = useRef(0);
+  const log = useRef(null);
+  const jump = useRef(null);
+  const cursor = useRef(0); // newest message id from a GET; polls ask only for messages after it
+  const shown = useRef(null); // the message list last on screen, to tell when messages arrive
+  const atBottom = useRef(true);
   const activityRef = useRef(onActivity);
   activityRef.current = onActivity;
 
   const load = useCallback(async () => {
     try {
-      setData(await api(`/chats/${chatId}/messages`));
+      const result = await api(`/chats/${chatId}/messages`);
+      cursor.current = newestId(result.messages);
+      setData(result);
     } catch (err) {
       setError(err);
     }
   }, [chatId]);
 
-  // Load, mark read (server does it on GET), then poll for new messages while open.
+  // Load and mark read (server does it on GET); the poll below then picks up new messages.
   useEffect(() => {
     load().then(() => {
       refreshMe();
       activityRef.current?.();
     });
-    const timer = setInterval(load, POLL_MS);
-    return () => clearInterval(timer);
   }, [load, refreshMe]);
 
+  // A blip (network, 5xx) keeps the chat on screen and retries on the next tick.
+  const poll = async () => {
+    try {
+      const { messages, hasMore } = await api(`/chats/${chatId}/messages?after=${cursor.current}`);
+      if (!messages.length) return false;
+      cursor.current = Math.max(cursor.current, newestId(messages));
+      setData((d) => {
+        const merged = mergeMessages(d.messages, messages);
+        return merged === d.messages ? d : { ...d, messages: merged };
+      });
+      activityRef.current?.(); // the server marked it read; the desktop list re-sorts
+      return hasMore;
+    } catch (err) {
+      if (CHAT_GONE.includes(err.code)) setError(err);
+      return false;
+    }
+  };
+  usePoll(poll, POLL_MS, Boolean(data) && !error);
+
+  // The first load and your own new messages scroll to the bottom. Others' messages only do if you
+  // were already near it (a poll can also slot one in just above yours); otherwise the
+  // "New messages" button shows up.
   useEffect(() => {
-    const count = data?.messages.length ?? 0;
-    if (count !== lastCount.current) bottom.current?.scrollIntoView({ block: 'end' });
-    lastCount.current = count;
+    if (!data || data.messages === shown.current) return;
+    const first = shown.current === null;
+    const newest = data.messages.at(-1);
+    const sentNow = newest?.mine && newest.id !== shown.current?.at(-1)?.id;
+    shown.current = data.messages;
+    if (first || atBottom.current || sentNow) bottom.current?.scrollIntoView({ block: 'end' });
+    else setUnseen(true);
   }, [data]);
+
+  // The button unmounts once you're at the newest message; keep keyboard focus in the chat.
+  const hideJump = () => {
+    if (document.activeElement === jump.current) log.current?.focus({ preventScroll: true });
+    setUnseen(false);
+  };
+
+  const onScroll = (e) => {
+    const el = e.currentTarget;
+    atBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < NEAR_BOTTOM_PX;
+    if (atBottom.current) hideJump();
+  };
+
+  const jumpToNewest = () => {
+    bottom.current?.scrollIntoView({ block: 'end' });
+    hideJump();
+  };
 
   const send = async (e) => {
     e.preventDefault();
@@ -51,7 +111,9 @@ export default function ChatScreen({ chatId, refreshMe, embedded = false, onActi
     setSending(true);
     try {
       const { message } = await api(`/chats/${chatId}/messages`, { method: 'POST', body: { body } });
-      setData((d) => ({ ...d, messages: [...d.messages, message] }));
+      // Shown now, but the cursor stays put: the next poll returns it again (deduped) along with
+      // anything the other group posted just before it.
+      setData((d) => ({ ...d, messages: mergeMessages(d.messages, [message]) }));
       setDraft('');
       activityRef.current?.();
     } catch (err) {
@@ -90,7 +152,7 @@ export default function ChatScreen({ chatId, refreshMe, embedded = false, onActi
         </div>
       </header>
 
-      <div className="chat-body">
+      <div ref={log} className="chat-body" role="log" aria-label="Messages" tabIndex={0} onScroll={onScroll}>
         <p className="chat-intro">
           {chat.myGroup.name} matched with {chat.otherGroup.name}.<br />
           {participants.map((p) => p.firstName).join(', ')}
@@ -100,8 +162,9 @@ export default function ChatScreen({ chatId, refreshMe, embedded = false, onActi
           const showSender = !m.mine && (!prev || prev.sender?.id !== m.sender?.id);
           return (
             <div key={m.id} style={{ display: 'contents' }}>
-              {showSender && <div className="msg__sender">{m.sender?.firstName ?? 'Former member'}</div>}
+              {showSender && <div className="msg__sender" aria-hidden="true">{m.sender?.firstName ?? 'Former member'}</div>}
               <div className={`msg ${m.mine ? 'msg--mine' : ''}`}>
+                <span className="sr-only">{m.mine ? 'You' : m.sender?.firstName ?? 'Former member'}: </span>
                 {!m.mine && (showSender && m.sender
                   ? <Avatar initials={m.sender.initials} color={m.sender.avatarColor} size={36} />
                   : <span className="msg__spacer" />)}
@@ -113,6 +176,14 @@ export default function ChatScreen({ chatId, refreshMe, embedded = false, onActi
         })}
         <div ref={bottom} />
       </div>
+
+      {unseen && (
+        <div className="chat-jump">
+          <button ref={jump} type="button" className="btn btn--primary btn--sm" onClick={jumpToNewest}>
+            <Icon name="chevronDown" size={18} /> New messages
+          </button>
+        </div>
+      )}
 
       <form className="composer" onSubmit={send}>
         <label className="sr-only" htmlFor="composer">Message</label>

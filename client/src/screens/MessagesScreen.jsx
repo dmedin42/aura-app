@@ -1,12 +1,14 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { api } from '../api.js';
 import Avatar, { GroupPair } from '../components/Avatar.jsx';
 import Icon from '../components/Icon.jsx';
 import { useToast } from '../components/ui.jsx';
 import ChatScreen from './ChatScreen.jsx';
 import { formatChatTime, plural } from '../format.js';
+import { usePoll } from '../usePoll.js';
 
 const VIEW_TITLES = { archived: 'Archived', deleted: 'Recently deleted' };
+const POLL_MS = 5000;
 
 export default function MessagesScreen({ me, onSwitchGroup, refreshMe, isDesktop = false, chatId = null }) {
   const toast = useToast();
@@ -19,8 +21,10 @@ export default function MessagesScreen({ me, onSwitchGroup, refreshMe, isDesktop
   const [pendingLikeId, setPendingLikeId] = useState(null);
   const [selected, setSelected] = useState(() => new Set());
   const [newChatId, setNewChatId] = useState(null);
+  const listVersion = useRef(0); // bumped by changes made here, so an in-flight refresh can't undo them
 
   const load = useCallback(async () => {
+    listVersion.current += 1;
     setError(null);
     try {
       const [likeData, chatData] = await Promise.all([
@@ -40,14 +44,29 @@ export default function MessagesScreen({ me, onSwitchGroup, refreshMe, isDesktop
     load();
   }, [load]);
 
-  // Desktop: the open chat pane reports reads/sends so the list's previews and unread counts stay current.
+  // Polled (and called by the desktop chat pane after reads/sends) so new messages re-sort the
+  // list and update previews and unread counts. The server already sorts by newest activity.
   const refreshChats = useCallback(async () => {
+    const version = listVersion.current;
     try {
-      setChats((await api(`/groups/${groupId}/chats?view=${view}`)).chats);
+      const { chats: next } = await api(`/groups/${groupId}/chats?view=${view}`);
+      if (version !== listVersion.current) return;
+      setChats((cs) => (JSON.stringify(cs) === JSON.stringify(next) ? cs : next));
     } catch {
-      // The list keeps its last good state; the next full load will retry.
+      // The list keeps its last good state; the next poll will retry.
     }
   }, [groupId, view]);
+  usePoll(refreshChats, POLL_MS, chats !== null && !error);
+
+  // The tab bar / sidebar badge sums this same inbox (from /me), so re-check it when they disagree.
+  // Desktop: wait while the open chat still counts as unread; the pane marks it read on its next
+  // poll, and the refresh that follows re-runs this check.
+  useEffect(() => {
+    if (view !== 'inbox' || !chats) return;
+    if (isDesktop && chats.some((c) => c.id === chatId && c.unreadCount > 0)) return;
+    const unread = chats.reduce((sum, c) => sum + c.unreadCount, 0);
+    if (unread !== me.unreadMessages) refreshMe();
+  }, [chats, view, me.unreadMessages, refreshMe, isDesktop, chatId]);
 
   // The vertical slice: accept -> server creates match + chat -> we update the lists in place.
   const accept = async (like) => {
@@ -55,6 +74,7 @@ export default function MessagesScreen({ me, onSwitchGroup, refreshMe, isDesktop
     try {
       const { chat } = await api(`/likes/${like.id}/accept`, { method: 'POST' });
       setLikes((ls) => ls.filter((l) => l.id !== like.id));
+      listVersion.current += 1;
       if (view === 'inbox') setChats((cs) => [chat, ...(cs ?? []).filter((c) => c.id !== chat.id)]);
       setNewChatId(chat.id);
       if (isDesktop) window.location.hash = `#/messages/${chat.id}`; // open it in the chat pane
@@ -93,6 +113,7 @@ export default function MessagesScreen({ me, onSwitchGroup, refreshMe, isDesktop
     const ids = [...selected];
     try {
       await api('/chats/bulk', { method: 'POST', body: { action, chatIds: ids } });
+      listVersion.current += 1;
       setChats((cs) => cs.filter((c) => !selected.has(c.id)));
       setSelected(new Set());
       toast(`${plural(ids.length, 'chat')} ${verb}.`);
@@ -293,7 +314,7 @@ function ChatRow({ chat, isNew, isOpen, selecting, selected, onToggle }) {
         </span>
         <span className="chat-row__mid">
           <span className={`chat-row__last ${last ? '' : 'chat-row__last--new'}`}>{preview}</span>
-          {chat.unreadCount > 0 && <span className="count-dot" aria-label={`${chat.unreadCount} unread`}>{chat.unreadCount}</span>}
+          {chat.unreadCount > 0 && !isOpen && <span className="count-dot" aria-label={`${chat.unreadCount} unread`}>{chat.unreadCount}</span>}
         </span>
         <span className="chat-row__people" style={{ display: 'block' }}>{plural(chat.peopleCount, 'person', 'people')}</span>
       </span>
