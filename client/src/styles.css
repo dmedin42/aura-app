@@ -537,6 +537,19 @@ h1, h2, h3 { font-family: var(--font-head); margin: 0; letter-spacing: -0.02em; 
 .chat-head__meta { color: var(--muted); font-size: 14px; }
 .chat-head > div { min-width: 0; }
 .chat-body { flex: 1; overflow-y: auto; padding: 16px 14px; display: flex; flex-direction: column; gap: 4px; }
+.chat-body:focus-visible { outline-offset: -3px; }
+/* "New messages" floats just above the composer while you're scrolled up */
+.chat-jump { position: relative; height: 0; }
+.chat-jump .btn {
+  position: absolute;
+  bottom: 12px;
+  left: 0;
+  right: 0;
+  z-index: 2;
+  width: max-content;
+  margin: 0 auto;
+  box-shadow: 0 6px 18px rgba(22, 21, 28, 0.18);
+}
 .chat-intro { text-align: center; color: var(--muted); font-size: 14px; margin: 8px 0 16px; }
 .msg { display: flex; align-items: flex-end; gap: 8px; max-width: 85%; }
 .msg--mine { align-self: flex-end; flex-direction: row-reverse; }

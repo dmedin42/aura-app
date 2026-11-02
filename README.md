@@ -99,3 +99,24 @@ The vertical slice is **Accept** in "Groups that liked you". It goes from the br
 Run `npm run db:reset` to put the two requests back for the next demo (check with the team first, because it resets the shared database).
 
 You can also check the slice automatically. With `npm run dev` running, run `npm run verify:slice`. It accepts a request as Avery, checks the API response, refetches like a browser refresh would, checks the database rows, and prints `PASS`/`FAIL` for each step. It really accepts a request, so coordinate with the team before running it on the shared database.
+
+## Live Chat Updates
+
+When the other group sends a message, it shows up in your open chat within about 5 seconds, with no reload.
+
+- **Only new messages.** An open chat calls `GET /api/chats/:id/messages?after=<last message id>` every ~5 seconds (`after=0` for a chat with no messages yet). The server returns only messages newer than the last one on screen, oldest first, and marks the chat read only when something new came back.
+- **Background tabs pause.** Polling stops while the tab is hidden and catches up as soon as you come back.
+- **The chat list keeps up.** On phone and desktop the list refreshes on the same schedule, so a chat with a new message moves to the top with the newest preview and unread count. On desktop, the chat that's open in the right pane doesn't show an unread badge.
+- **No jumping while you read.** If you've scrolled up, new messages don't pull you down; a **New messages** button appears instead. Screen readers announce incoming messages and who sent them.
+
+Supabase Realtime could replace the polling later; for now polling keeps the server on plain `pg` with no extra setup.
+
+**Try it by hand with two windows:**
+1. In a normal browser window, sign in as **Avery Hansen** (Tuesday Crew) and open the chat **Tuesday Crew + Sunday Summit Club**.
+2. In a private window (it keeps its own "Signed in as"), sign in as **Maya Patel** and open the same chat. Any Sunday Summit Club member works: Maya Patel, Theo Nguyen, Priya Shah, Sam Jensen, Jordan Reyes or Lena Novak.
+3. Send a message as Maya. Within about 5 seconds it appears in Avery's window. Reply as Avery and watch it arrive in Maya's.
+4. In Avery's window, go back to Messages (on desktop the list is already next to the chat) and **Accept** one of the requests in the purple box, so a newer chat sits on top. Then send another message as Maya. Within about 5 seconds, Tuesday Crew + Sunday Summit Club moves back to the top of Avery's list with Maya's message as the preview.
+
+Run `npm run db:reset` afterwards to put the requests back (check with the team first, because it resets the shared database).
+
+You can also check it automatically. With `npm run dev` running, run `npm run verify:chat`. It posts a message as a member of the other group in Avery's least recently active chat (Tuesday Crew + Sunday Summit Club on the seed data), polls with `?after=` the way an open chat does, checks that the chat moves to the top of the list with the new preview, checks the database rows, and prints `PASS`/`FAIL` for each step. On a fresh seed Avery has only that one chat, so there's no re-sort to see until you Accept a request (or run `npm run verify:slice`) first. It really posts a message, which stays as that chat's newest preview, and it marks the chat read, which clears the seeded unread badge. Coordinate with the team before running it on the shared database; `npm run db:reset` restores the demo data.

@@ -17,6 +17,7 @@ Machine-specific notes (paths, accounts, local setup) belong in `CLAUDE.local.md
 - `npm run db:check`: connects with `server/.env` and prints the `users` row count. It's read-only.
 - `npm run db:reset`: runs schema then seed. **This wipes the shared team database.** Ask the team (or the user) before running it.
 - `npm run verify:slice`: end-to-end check of the Accept flow. It mutates data, so follow it with `db:reset` only if the team agrees.
+- `npm run verify:chat`: end-to-end check of live chat updates (`?after=` polling, list re-sort). It posts a real message and marks a chat read, so ask the team before running it on the shared database, and follow it with `db:reset` only if the team agrees.
 - `npm run build`: production build of the client.
 
 ## Conventions
